@@ -30,6 +30,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -122,6 +123,14 @@ public class BuildConfig {
     private String brewBuildName;
 
     private String buildCategory;
+
+    @JsonIgnore
+    private Map<String, String> llmGeneratedFields = new LinkedHashMap<>();
+
+    @JsonIgnore
+    public void markLlmGenerated(String fieldName, String modelName) {
+        llmGeneratedFields.put(fieldName, modelName);
+    }
 
     /**
      * Set the defaults of buildConfig if not explicitly specified

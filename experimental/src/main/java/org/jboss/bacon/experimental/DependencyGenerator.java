@@ -92,7 +92,10 @@ public class DependencyGenerator {
         @Override
         public void run() {
             try {
-                ObjectHelper.print(getJsonOutput(), generatePigConfig());
+                PigConfiguration pigConfig = generatePigConfig();
+                String output = ObjectHelper.serialize(getJsonOutput(), pigConfig);
+                output = BuildConfigGenerator.insertLlmComments(output, pigConfig.getBuilds());
+                System.out.println(output);
             } catch (JsonProcessingException e) {
                 throw new FatalException("Caught exception " + e.getMessage(), e);
             }
@@ -103,7 +106,8 @@ public class DependencyGenerator {
             GeneratorConfig config = loadConfig();
             // Initialize working classes
             DependencyResolver dependencyResolver = new DependencyResolver(config.getDependencyResolutionConfig());
-            ProjectNameGenerator projectNameGenerator = new ProjectNameGenerator();
+            ProjectNameGenerator projectNameGenerator = new ProjectNameGenerator(
+                    config.getBuildConfigGeneratorConfig().getBuildNameSuffix());
             ProjectFinder projectFinder = new ProjectFinder(config.getBuildConfigGeneratorConfig());
             BuildConfigGenerator buildConfigGenerator = new BuildConfigGenerator(
                     config.getBuildConfigGeneratorConfig());

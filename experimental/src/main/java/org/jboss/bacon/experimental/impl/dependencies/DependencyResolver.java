@@ -200,12 +200,18 @@ public class DependencyResolver {
             }
         }
         if (excludeAlreadyBuilt) {
-            MavenLookupRequest request = MavenLookupRequest.builder()
-                    .mode(DaHelper.getMode(false, false, null))
-                    .brewPullActive(false)
-                    .artifacts(releaseRepo.getGavs())
-                    .build();
-            Set<MavenLookupResult> mavenLookupResults = lookupApi.lookupMaven(request);
+            Set<MavenLookupResult> mavenLookupResults;
+            try {
+                MavenLookupRequest request = MavenLookupRequest.builder()
+                        .mode(DaHelper.getMode(false, false, null))
+                        .brewPullActive(false)
+                        .artifacts(releaseRepo.getGavs())
+                        .build();
+                mavenLookupResults = lookupApi.lookupMaven(request);
+            } catch (javax.ws.rs.NotFoundException e) {
+                log.warn("DA lookup failed for {} (404 Not Found), including project.", releaseRepo.getFirstGAV());
+                return true;
+            }
             Set<String> versionsFound = mavenLookupResults.stream()
                     .map(MavenLookupResult::getBestMatchVersion)
                     .collect(Collectors.toSet());

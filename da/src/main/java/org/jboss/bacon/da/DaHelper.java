@@ -17,12 +17,15 @@
  */
 package org.jboss.bacon.da;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import org.apache.http.NoHttpResponseException;
 import org.jboss.bacon.da.rest.endpoint.ListingsApi;
 import org.jboss.bacon.da.rest.endpoint.LookupApi;
 import org.jboss.bacon.da.rest.endpoint.ReportsApi;
@@ -46,11 +49,15 @@ import org.jboss.resteasy.plugins.providers.RegisterBuiltin;
 import org.jboss.resteasy.spi.ResteasyProviderFactory;
 
 import io.opentelemetry.api.trace.Span;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * Helper methods for DA stuff
  */
+@Slf4j
 public class DaHelper {
+
+    private static final int MAX_RETRIES = 3;
     private final static String DA_PATH = "/rest/v-1";
 
     private static ResteasyClientBuilder builder;
@@ -84,19 +91,51 @@ public class DaHelper {
     }
 
     public static ReportsApi createReportsApi() {
-        return getClient().proxy(ReportsApi.class);
+        return withRetry(getClient().proxy(ReportsApi.class), ReportsApi.class);
     }
 
     public static ListingsApi createListingsApi() {
-        return getClient().proxy(ListingsApi.class);
+        return withRetry(getClient().proxy(ListingsApi.class), ListingsApi.class);
     }
 
     public static ListingsApi createAuthenticatedListingsApi() {
-        return getAuthenticatedClient().proxy(ListingsApi.class);
+        return withRetry(getAuthenticatedClient().proxy(ListingsApi.class), ListingsApi.class);
     }
 
     public static LookupApi createLookupApi() {
-        return getClient().proxy(LookupApi.class);
+        return withRetry(getClient().proxy(LookupApi.class), LookupApi.class);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> T withRetry(T delegate, Class<T> iface) {
+        return (T) Proxy.newProxyInstance(iface.getClassLoader(), new Class<?>[] { iface }, (proxy, method, args) -> {
+            for (int attempt = 1;; attempt++) {
+                try {
+                    return method.invoke(delegate, args);
+                } catch (InvocationTargetException e) {
+                    Throwable cause = e.getCause();
+                    if (attempt < MAX_RETRIES && hasCause(cause, NoHttpResponseException.class)) {
+                        log.warn(
+                                "DA request failed (attempt {}/{}), retrying: {}",
+                                attempt,
+                                MAX_RETRIES,
+                                cause.getMessage());
+                        continue;
+                    }
+                    throw cause;
+                }
+            }
+        });
+    }
+
+    private static boolean hasCause(Throwable t, Class<? extends Throwable> type) {
+        while (t != null) {
+            if (type.isInstance(t)) {
+                return true;
+            }
+            t = t.getCause();
+        }
+        return false;
     }
 
     /**

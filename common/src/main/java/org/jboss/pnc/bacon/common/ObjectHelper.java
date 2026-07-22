@@ -42,9 +42,13 @@ public class ObjectHelper {
      * @param o Object to print
      * @throws JsonProcessingException
      */
+    public static String serialize(boolean json, Object o) throws JsonProcessingException {
+        return getOutputMapper(json).writeValueAsString(o);
+    }
+
     public static void print(boolean json, Object o) throws JsonProcessingException {
         if (!getLogger(Logger.ROOT_LOGGER_NAME).getLevel().isGreaterOrEqual(LOG_LEVEL_SILENT)) {
-            System.out.println(getOutputMapper(json).writeValueAsString(o));
+            System.out.println(serialize(json, o));
         }
     }
 

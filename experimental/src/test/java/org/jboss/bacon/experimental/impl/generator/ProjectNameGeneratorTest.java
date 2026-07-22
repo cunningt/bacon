@@ -87,6 +87,28 @@ public class ProjectNameGeneratorTest {
     }
 
     @Test
+    public void shouldGenerateNameWithCustomSuffix() {
+        ProjectNameGenerator custom = new ProjectNameGenerator("-CUSTOM");
+        Project project = new Project();
+        project.setGavs(Collections.singleton(new GAV("org.slf4j", "slf4j-api", "1.7.25")));
+        project.setDependencies(Set.of());
+        custom.nameProjects(Set.of(project));
+
+        assertThat(project.getName()).isEqualTo("org.slf4j-slf4j-api-1.7.25-CUSTOM");
+    }
+
+    @Test
+    public void shouldGenerateNameWithNoSuffix() {
+        ProjectNameGenerator noSuffix = new ProjectNameGenerator("");
+        Project project = new Project();
+        project.setGavs(Collections.singleton(new GAV("org.slf4j", "slf4j-api", "1.7.25")));
+        project.setDependencies(Set.of());
+        noSuffix.nameProjects(Set.of(project));
+
+        assertThat(project.getName()).isEqualTo("org.slf4j-slf4j-api-1.7.25");
+    }
+
+    @Test
     public void shouldDetectDuplicateWithTemporary() {
         Project nonRedhat = new Project();
         nonRedhat.setGavs(Collections.singleton(new GAV("org.slf4j", "slf4j-api", "1.7.25")));

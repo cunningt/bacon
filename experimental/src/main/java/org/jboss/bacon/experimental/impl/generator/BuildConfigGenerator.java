@@ -3,6 +3,7 @@ package org.jboss.bacon.experimental.impl.generator;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -33,10 +34,20 @@ import lombok.extern.slf4j.Slf4j;
 public class BuildConfigGenerator {
     private final BuildConfigGeneratorConfig config;
     private final EnvironmentResolver environments;
+    private final LlmScmUrlResolver llmResolver;
+    private final LlmTagResolver llmTagResolver;
+    private final LlmBuildTypeResolver llmBuildTypeResolver;
+    private final LlmEnvironmentResolver llmEnvironmentResolver;
+    private final LlmBuildScriptGenerator llmBuildScriptGenerator;
 
     public BuildConfigGenerator(BuildConfigGeneratorConfig buildConfigGeneratorConfig) {
         this.config = buildConfigGeneratorConfig;
         environments = new EnvironmentResolver(buildConfigGeneratorConfig);
+        llmResolver = new LlmScmUrlResolver(buildConfigGeneratorConfig.getLlmConfig());
+        llmTagResolver = new LlmTagResolver(buildConfigGeneratorConfig.getLlmConfig());
+        llmBuildTypeResolver = new LlmBuildTypeResolver(buildConfigGeneratorConfig.getLlmConfig());
+        llmEnvironmentResolver = new LlmEnvironmentResolver(buildConfigGeneratorConfig.getLlmConfig());
+        llmBuildScriptGenerator = new LlmBuildScriptGenerator(buildConfigGeneratorConfig.getLlmConfig());
     }
 
     public List<BuildConfig> generateConfigs(DependencyResult dependencies, FoundProjects foundProjects) {
@@ -97,22 +108,74 @@ public class BuildConfigGenerator {
     private BuildConfig generateNewBuildConfig(Project project, String name) {
         GAV gav = project.getFirstGAV();
         BuildConfig buildConfig = new BuildConfig();
-        buildConfig.setBuildType(BuildType.MVN.name());
         buildConfig.setBuildScript(generateBuildScript(taintedMessage(project)));
         buildConfig.setEnvironmentName(config.getDefaultValues().getEnvironmentName());
         buildConfig.setName(name);
         buildConfig.setProject(gav.getGroupId() + "-" + gav.getArtifactId());
         buildConfig.setDescription("Autobuild generated config for " + gav);
+        String llmModel = config.getLlmConfig().getModel();
         String scmUrl = processScmUrl(project.getSourceCodeURL());
+        if (scmUrl == null) {
+            String llmUrl = llmResolver.resolveScmUrl(project.getGavs());
+            if (llmUrl != null) {
+                log.info("LLM resolved SCM URL for {}: {}", name, llmUrl);
+                scmUrl = processScmUrl(llmUrl);
+                if (scmUrl != null) {
+                    buildConfig.markLlmGenerated("scmUrl", llmModel);
+                }
+            }
+        }
         if (scmUrl == null) {
             setPlaceholderSCM(name, buildConfig);
         } else {
             buildConfig.setScmUrl(scmUrl);
             if (project.getSourceCodeRevision() == null) {
-                setPlaceholderSCMTag(name, buildConfig);
+                String llmTag = llmTagResolver.resolveTag(project.getGavs(), buildConfig.getScmUrl());
+                if (llmTag != null) {
+                    log.info("LLM resolved SCM tag for {}: {}", name, llmTag);
+                    buildConfig.setScmRevision(llmTag);
+                    buildConfig.markLlmGenerated("scmRevision", llmModel);
+                } else {
+                    setPlaceholderSCMTag(name, buildConfig);
+                }
             } else {
                 buildConfig.setScmRevision(project.getSourceCodeRevision());
             }
+        }
+        String buildType = llmBuildTypeResolver
+                .resolveBuildType(project.getGavs(), buildConfig.getScmUrl(), buildConfig.getScmRevision());
+        if (buildType != null) {
+            log.info("Resolved build type for {}: {}", name, buildType);
+            buildConfig.setBuildType(buildType);
+            if (llmBuildTypeResolver.wasLastResolutionLlmBased()) {
+                buildConfig.markLlmGenerated("buildType", llmModel);
+            }
+        } else {
+            buildConfig.setBuildType(BuildType.MVN.name());
+        }
+        String resolvedEnv = llmEnvironmentResolver
+                .resolveEnvironment(project.getGavs(), buildConfig.getBuildType(), buildConfig.getScmUrl());
+        if (resolvedEnv != null) {
+            log.info("LLM resolved environment for {}: {}", name, resolvedEnv);
+            buildConfig.setEnvironmentName(resolvedEnv);
+            buildConfig.markLlmGenerated("environmentName", llmModel);
+        }
+        String jdkVersion = llmEnvironmentResolver.getJdkVersion(buildConfig.getEnvironmentName());
+        Set<String> alignParams = DefaultAlignmentGenerator
+                .generateAlignmentParameters(buildConfig.getBuildType(), jdkVersion);
+        if (!alignParams.isEmpty()) {
+            buildConfig.getAlignmentParameters().addAll(alignParams);
+        }
+        String llmScript = llmBuildScriptGenerator.generateBuildScript(
+                project.getGavs(),
+                buildConfig.getBuildType(),
+                buildConfig.getScmUrl(),
+                buildConfig.getScmRevision());
+        if (llmScript != null) {
+            log.info("LLM generated build script for {}", name);
+            String llmComment = "# Build script generated by LLM (model: " + llmModel + ")";
+            buildConfig.setBuildScript(renderBuildScript(taintedMessage(project), llmComment, llmScript));
+            buildConfig.markLlmGenerated("buildScript", llmModel);
         }
         return buildConfig;
     }
@@ -123,15 +186,18 @@ public class BuildConfigGenerator {
     }
 
     private String generateBuildScript(String taintedMessage) {
-        String commentAutogenerated = "# This script was autogenerated";
         String defaultBuildCommand = config.getDefaultValues().getBuildScript();
-        return renderBuildScript(taintedMessage, commentAutogenerated, defaultBuildCommand);
+        return renderBuildScript(taintedMessage, null, defaultBuildCommand);
+    }
+
+    private String generateBuildScript(String taintedMessage, String buildCommand) {
+        return renderBuildScript(taintedMessage, null, buildCommand);
     }
 
     private String renderBuildScript(String taintedMessage, String commentAutogenerated, String buildCommand) {
         String failCommand = "false";
         StringJoiner sj = new StringJoiner("\n");
-        if (!buildCommand.contains(commentAutogenerated)) {
+        if (commentAutogenerated != null && !buildCommand.contains(commentAutogenerated)) {
             sj.add(commentAutogenerated);
         }
         sj.add(buildCommand);
@@ -177,7 +243,14 @@ public class BuildConfigGenerator {
     private BuildConfig updateSimilar(BuildConfig buildConfig, Project project) {
         updateAlignParams(buildConfig, false);
         if (project.getSourceCodeRevision() == null) {
-            setPlaceholderSCMTag(buildConfig.getName(), buildConfig);
+            String llmTag = llmTagResolver.resolveTag(project.getGavs(), buildConfig.getScmUrl());
+            if (llmTag != null) {
+                log.info("LLM resolved SCM tag for {}: {}", buildConfig.getName(), llmTag);
+                buildConfig.setScmRevision(llmTag);
+                buildConfig.markLlmGenerated("scmRevision", config.getLlmConfig().getModel());
+            } else {
+                setPlaceholderSCMTag(buildConfig.getName(), buildConfig);
+            }
         } else {
             buildConfig.setScmRevision(project.getSourceCodeRevision());
         }
@@ -364,6 +437,78 @@ public class BuildConfigGenerator {
             log.debug("Updated SCM URL from {} to {}", originalUrl, updatedUrl);
         }
         return updatedUrl;
+    }
+
+    public static String insertLlmComments(String yaml, List<BuildConfig> buildConfigs) {
+        Map<String, Map<String, String>> llmFieldsByName = new LinkedHashMap<>();
+        for (BuildConfig bc : buildConfigs) {
+            if (!bc.getLlmGeneratedFields().isEmpty()) {
+                llmFieldsByName.put(bc.getName(), bc.getLlmGeneratedFields());
+            }
+        }
+        if (llmFieldsByName.isEmpty()) {
+            return yaml;
+        }
+
+        String[] lines = yaml.split("\n", -1);
+        StringBuilder result = new StringBuilder();
+        Map<String, String> currentLlmFields = null;
+        boolean inMultiline = false;
+        int multilineBaseIndent = 0;
+
+        for (String line : lines) {
+            result.append(line).append('\n');
+
+            String stripped = line.stripLeading();
+            if (stripped.isEmpty()) {
+                continue;
+            }
+
+            int indent = line.length() - stripped.length();
+
+            if (inMultiline) {
+                if (indent <= multilineBaseIndent && !stripped.startsWith("#")) {
+                    inMultiline = false;
+                } else {
+                    continue;
+                }
+            }
+
+            String namePrefix = stripped.startsWith("- name: ") ? "- name: "
+                    : stripped.startsWith("name: ") ? "name: " : null;
+            if (namePrefix != null) {
+                String name = stripped.substring(namePrefix.length()).trim().replaceAll("^[\"']|[\"']$", "");
+                currentLlmFields = llmFieldsByName.get(name);
+                continue;
+            }
+
+            if (currentLlmFields == null) {
+                continue;
+            }
+
+            if (stripped.endsWith("|") || stripped.endsWith(">") || stripped.endsWith("|-")
+                    || stripped.endsWith("|+")) {
+                inMultiline = true;
+                multilineBaseIndent = indent;
+                continue;
+            }
+
+            for (Map.Entry<String, String> entry : currentLlmFields.entrySet()) {
+                if (stripped.startsWith(entry.getKey() + ":")) {
+                    result.append(" ".repeat(indent))
+                            .append("# Generated by LLM (model: ")
+                            .append(entry.getValue())
+                            .append(")\n");
+                    break;
+                }
+            }
+        }
+
+        if (result.length() > 0 && result.charAt(result.length() - 1) == '\n') {
+            result.setLength(result.length() - 1);
+        }
+
+        return result.toString();
     }
 
 }

@@ -58,6 +58,20 @@ public class BuildConfigGeneratorConfig {
     private DefaultBuildConfigValues defaultValues = new DefaultBuildConfigValues();
 
     /**
+     * Configuration for LLM-based SCM resolution. When enabled, the autobuilder will query a local LLM to determine the
+     * SCM URL and tag for projects that have no SCM URL or revision in the recipe repository.
+     */
+    @Valid
+    @NotNull
+    private LlmConfig llmConfig = new LlmConfig();
+
+    /**
+     * Suffix appended to generated build config names. Defaults to "-AUTOBUILD". Set to empty string to omit.
+     */
+    @NotNull
+    private String buildNameSuffix = "-AUTOBUILD";
+
+    /**
      * If true, uses systemImageId to specify environment (to force use of specific environment) when the environment
      * defined by environmentName would not be found because it was deprecated.
      */
